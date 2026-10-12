@@ -1,6 +1,3 @@
-import 'dart:async';
-import 'dart:typed_data';
-
 import 'package:camera_control_dart/camera_control_dart.dart';
 import 'package:flutter/material.dart';
 
@@ -23,8 +20,6 @@ class RemotePage extends StatefulWidget {
 
 class _RemotePageState extends State<RemotePage> {
   Camera? _camera;
-  Uint8List? _liveViewBytes;
-  Timer? _liveViewTimer;
   bool _capturing = false;
   String? _error;
   String _status = '连接中…';
@@ -45,19 +40,7 @@ class _RemotePageState extends State<RemotePage> {
   Future<void> _connect() async {
     try {
       _camera = await widget.service.connect(widget.cameraHandle);
-      await _camera!.startLiveView();
-      setState(() => _status = '已连接');
-      _liveViewTimer =
-          Timer.periodic(const Duration(milliseconds: 500), (_) async {
-        try {
-          final data = await _camera?.getLiveViewData();
-          if (data != null && mounted) {
-            setState(() => _liveViewBytes = data.imageBytes);
-          }
-        } catch (_) {
-          // 单帧失败不打断轮询
-        }
-      });
+      if (mounted) setState(() => _status = '已连接');
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -82,7 +65,6 @@ class _RemotePageState extends State<RemotePage> {
 
   @override
   void dispose() {
-    _liveViewTimer?.cancel();
     widget.service.disconnect();
     super.dispose();
   }
@@ -105,11 +87,24 @@ class _RemotePageState extends State<RemotePage> {
             child: Container(
               color: Colors.black,
               width: double.infinity,
-              child: _liveViewBytes != null
-                  ? Image.memory(_liveViewBytes!, fit: BoxFit.contain)
-                  : const Center(
-                      child: Text('等待实时取景…',
+              child: _camera == null
+                  ? const Center(
+                      child: Text('等待连接…',
                           style: TextStyle(color: Colors.white54)),
+                    )
+                  : StreamBuilder<LiveViewData>(
+                      stream: _camera!.liveView(),
+                      builder: (context, snapshot) {
+                        final bytes = snapshot.data?.imageBytes;
+                        if (bytes == null) {
+                          return const Center(
+                            child: Text('等待实时取景…',
+                                style:
+                                    TextStyle(color: Colors.white54)),
+                          );
+                        }
+                        return Image.memory(bytes, fit: BoxFit.contain);
+                      },
                     ),
             ),
           ),
@@ -117,7 +112,8 @@ class _RemotePageState extends State<RemotePage> {
             Padding(
               padding: const EdgeInsets.all(8),
               child: Text(_error!,
-                  style: const TextStyle(color: Colors.red, fontSize: 12)),
+                  style:
+                      const TextStyle(color: Colors.red, fontSize: 12)),
             ),
           SizedBox(
             height: 64,
@@ -132,7 +128,8 @@ class _RemotePageState extends State<RemotePage> {
                     return Container(
                       margin: const EdgeInsets.symmetric(
                           horizontal: 6, vertical: 10),
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 12),
                       decoration: BoxDecoration(
                         border: Border.all(color: Colors.grey.shade300),
                         borderRadius: BorderRadius.circular(8),
