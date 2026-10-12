@@ -4,6 +4,7 @@ import 'package:camera_control_dart/camera_control_dart.dart';
 import 'package:flutter/material.dart';
 
 import '../camera_service.dart';
+import 'diag_page.dart';
 import 'pairing_page.dart';
 
 /// 相机列表：订阅 SSDP 发现流，点相机进入配对。
@@ -44,7 +45,18 @@ class _CameraListPageState extends State<CameraListPage> {
   Widget build(BuildContext context) {
     final cameras = _cameras.values.toList();
     return Scaffold(
-      appBar: AppBar(title: const Text('CanonConnect')),
+      appBar: AppBar(
+        title: const Text('CanonConnect'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.bug_report),
+            tooltip: '发现诊断',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const DiagPage()),
+            ),
+          ),
+        ],
+      ),
       body: Column(
         children: [
           Container(
