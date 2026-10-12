@@ -3,12 +3,11 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
-/// 发现诊断页：原始 SSDP 抓包视角。
-/// 不经过 camera_control_dart，直接用 dart:io 发 M-SEARCH，
-/// 把收到的每个回包原文和设备描述抓取结果打到屏幕上，
-/// 一次定位"列表为空"卡在哪一环。
+/// 发现诊断页 v2：组播疑似走了错误的出口（iOS 多网卡），
+/// 改为：枚举本机 IP → 推算相机候选 IP → 逐个单播 M-SEARCH。
 class DiagPage extends StatefulWidget {
   const DiagPage({super.key});
 
@@ -22,7 +21,6 @@ class _DiagPageState extends State<DiagPage> {
 
   static const _searchTargets = [
     'urn:schemas-canon-com:service:ICPO-WFTEOSSystemService:1',
-    'urn:schemas-canon-com:service:ICPO-SmartPhoneEOSSystemService:1',
     'ssdp:all',
   ];
 
@@ -36,6 +34,13 @@ class _DiagPageState extends State<DiagPage> {
     if (mounted) setState(() => _log.add(line));
   }
 
+  String _mSearch(String st) => 'M-SEARCH * HTTP/1.1\r\n'
+      'HOST: 239.255.255.250:1900\r\n'
+      'MAN: "ns=01"\r\n'
+      'ST: $st\r\n'
+      'MX: 3\r\n'
+      '\r\n';
+
   Future<void> _scan() async {
     if (_scanning) return;
     setState(() {
@@ -43,9 +48,42 @@ class _DiagPageState extends State<DiagPage> {
       _log.clear();
     });
     try {
-      final socket =
-          await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
-      _add('本机 socket 端口: ${socket.port}');
+      // 1. 本机网卡
+      final ifaces = await NetworkInterface.list(
+        includeLoopback: false,
+        type: InternetAddressType.IPv4,
+      );
+      String? wifiIp;
+      for (final iface in ifaces) {
+        for (final addr in iface.addresses) {
+          _add('网卡 ${iface.name}: ${addr.address}');
+          // Wi-Fi 通常是 en0
+          if (iface.name == 'en0') wifiIp = addr.address;
+        }
+      }
+      wifiIp ??= ifaces
+          .expand((i) => i.addresses)
+          .firstOrNull
+          ?.address;
+      if (wifiIp == null) {
+        _add('!! 取不到本机 IPv4，无法继续');
+        return;
+      }
+      _add('选用本机 IP: $wifiIp');
+
+      // 2. 候选相机 IP：同网段 .1（网关，相机 AP 通常就是它）+ 网段广播
+      final prefix = wifiIp.split('.').take(3).join('.');
+      final candidates = <InternetAddress>[
+        InternetAddress('$prefix.1'),
+        InternetAddress('$prefix.255'),
+        InternetAddress('239.255.255.250'), // 组播对照
+      ];
+      _add('候选目标: ${candidates.map((c) => c.address).join(', ')}');
+
+      // 3. 绑定到 Wi-Fi IP（显式出口，替代官方的 IP_MULTICAST_IFINDEX）
+      final socket = await RawDatagramSocket.bind(
+          InternetAddress(wifiIp), 0);
+      _add('socket 绑定 ${socket.address.address}:${socket.port}');
 
       final responses = <String, String>{};
       final sub = socket.listen((event) {
@@ -54,7 +92,6 @@ class _DiagPageState extends State<DiagPage> {
         if (dg == null) return;
         final text = utf8.decode(dg.data, allowMalformed: true);
         final key = '${dg.address.address}:${dg.port}';
-        // 同一发送方只记第一包原文，避免刷屏
         if (!responses.containsKey(key)) {
           responses[key] = text;
           _add('── 收到回包 [$key] ──');
@@ -64,23 +101,17 @@ class _DiagPageState extends State<DiagPage> {
         }
       });
 
-      for (final st in _searchTargets) {
-        final msg = 'M-SEARCH * HTTP/1.1\r\n'
-            'HOST: 239.255.255.250:1900\r\n'
-            'MAN: "ns=01"\r\n'
-            'ST: $st\r\n'
-            'MX: 3\r\n'
-            '\r\n';
-        final data = utf8.encode(msg);
-        socket.send(data, InternetAddress('239.255.255.250'), 1900);
-        _add('已发 M-SEARCH [组播] ST=$st');
-        try {
-          socket.send(data, InternetAddress('255.255.255.255'), 1900);
-          _add('已发 M-SEARCH [广播] ST=$st');
-        } catch (e) {
-          _add('广播发送失败: $e');
+      for (final target in candidates) {
+        for (final st in _searchTargets) {
+          final data = utf8.encode(_mSearch(st));
+          try {
+            socket.send(data, target, 1900);
+            _add('已发 → ${target.address} ST=$st');
+          } catch (e) {
+            _add('发送失败 ${target.address}: $e');
+          }
+          await Future.delayed(const Duration(milliseconds: 400));
         }
-        await Future.delayed(const Duration(seconds: 1));
       }
 
       _add('等待回包 8 秒…');
@@ -89,8 +120,6 @@ class _DiagPageState extends State<DiagPage> {
       socket.close();
 
       _add('＝＝ 共收到 ${responses.length} 个发送方的回包 ＝＝');
-
-      // 对每个回包的 LOCATION 抓设备描述，看 modelName 到底是什么
       for (final entry in responses.entries) {
         final location = _headerValue(entry.value, 'location');
         if (location == null || location.isEmpty) {
@@ -102,16 +131,15 @@ class _DiagPageState extends State<DiagPage> {
           final resp = await http
               .get(Uri.parse(location.trim()))
               .timeout(const Duration(seconds: 5));
-          final body = resp.body;
-          final model = _xmlTag(body, 'modelName');
-          final friendly = _xmlTag(body, 'friendlyName');
+          final model = _xmlTag(resp.body, 'modelName');
+          final friendly = _xmlTag(resp.body, 'friendlyName');
           _add('  → modelName=[$model] friendlyName=[$friendly]');
         } catch (e) {
           _add('  → 设备描述抓取失败: $e');
         }
       }
       if (responses.isEmpty) {
-        _add('！！一个回包都没收到：iOS 可能拦了 UDP，或相机根本没回 M-SEARCH');
+        _add('！！单播/组播全都没回包：相机 SSDP 可能没起，或仍有系统层拦截');
       }
     } catch (e) {
       _add('诊断异常: $e');
@@ -142,8 +170,23 @@ class _DiagPageState extends State<DiagPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('发现诊断'),
+        title: const Text('发现诊断 v2'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.copy),
+            tooltip: '复制全部日志',
+            onPressed: _log.isEmpty
+                ? null
+                : () {
+                    Clipboard.setData(
+                        ClipboardData(text: _log.join('\n')));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                          content: Text(
+                              '已复制 ${_log.length} 行日志')),
+                    );
+                  },
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: _scanning ? null : _scan,
