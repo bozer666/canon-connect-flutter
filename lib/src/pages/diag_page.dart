@@ -119,6 +119,23 @@ class _DiagPageState extends State<DiagPage> {
       await sub.cancel();
       socket.close();
 
+      // 4. TCP 探测：PTP/IP 端口 15740（AP 模式可能根本不走 SSDP，直接连网关）
+      _add('── TCP 15740 探测 ──');
+      final tcpTargets = ['$prefix.1', '$prefix.2'];
+      await Future.wait(tcpTargets.map((ip) async {
+        try {
+          final sock = await Socket.connect(ip, 15740,
+              timeout: const Duration(seconds: 3));
+          _add('TCP $ip:15740 ✅ 通！相机 PTP/IP 端口是开的');
+          sock.destroy();
+        } on SocketException catch (e) {
+          final msg = e.osError?.message ?? e.message;
+          _add('TCP $ip:15740 ❌ $msg');
+        } catch (e) {
+          _add('TCP $ip:15740 ❌ $e');
+        }
+      }));
+
       _add('＝＝ 共收到 ${responses.length} 个发送方的回包 ＝＝');
       for (final entry in responses.entries) {
         final location = _headerValue(entry.value, 'location');
@@ -200,8 +217,7 @@ class _DiagPageState extends State<DiagPage> {
               itemCount: _log.length,
               itemBuilder: (context, i) => SelectableText(
                 _log[i],
-                style: const TextStyle(
-                    fontFamily: 'monospace', fontSize: 12),
+                style: const TextStyle(fontSize: 12),
               ),
             ),
     );
