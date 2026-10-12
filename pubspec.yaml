@@ -1,0 +1,24 @@
+name: canon_connect
+description: Canon Camera Connect 的 Flutter 重写 —— Wi-Fi PTP/IP 直连佳能相机
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: "^3.5.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # 相机协议层：PTP/IP + SSDP 主动发现（fork 自 JulianSchroden，已改主动 M-SEARCH）
+  camera_control_dart:
+    git:
+      url: https://github.com/bozer666/camera_control_dart.git
+      ref: main
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

@@ -1,0 +1,85 @@
+name: Build unsigned IPA
+
+# 未签名 release IPA（无需 Apple 开发者账号）。
+# 安装方式：AltStore / Sideloadly，用自己的 Apple ID 侧载。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.27.4"
+          channel: "stable"
+          cache: true
+
+      - name: Create GoogleService-Info.plist stub (still referenced by Xcode project)
+        run: |
+          cat > ios/Runner/GoogleService-Info.plist <<'PLIST_EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>API_KEY</key>
+            <string>dummy</string>
+            <key>GCM_SENDER_ID</key>
+            <string>000000000000</string>
+            <key>PLIST_VERSION</key>
+            <string>1</string>
+            <key>BUNDLE_ID</key>
+            <string>com.bozer666.canonconnect</string>
+            <key>PROJECT_ID</key>
+            <string>dummy</string>
+            <key>STORAGE_BUCKET</key>
+            <string>dummy.appspot.com</string>
+            <key>IS_ADS_ENABLED</key>
+            <false/>
+            <key>IS_ANALYTICS_ENABLED</key>
+            <false/>
+            <key>IS_APPINVITE_ENABLED</key>
+            <false/>
+            <key>IS_GCM_ENABLED</key>
+            <false/>
+            <key>IS_SIGNIN_ENABLED</key>
+            <true/>
+            <key>GOOGLE_APP_ID</key>
+            <string>1:000000000000:ios:0000000000000000000000</string>
+          </dict>
+          </plist>
+          PLIST_EOF
+          echo "stub plist created:"
+          ls -la ios/Runner/GoogleService-Info.plist
+
+      - name: Disable Crashlytics dSYM upload script (no Firebase in this app)
+        run: |
+          perl -i -pe 's{^(\s*)shellScript = .*FirebaseCrashlytics/upload-symbols.*$}{$1shellScript = "echo Skipping Crashlytics dSYM upload for unsigned build";}' ios/Runner.xcodeproj/project.pbxproj
+          grep -n "Skipping Crashlytics" ios/Runner.xcodeproj/project.pbxproj
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build unsigned iOS app
+        run: flutter build ios --release --no-codesign
+
+      - name: Package unsigned IPA
+        run: |
+          cd build/ios/iphoneos
+          rm -rf Payload canon_connect-unsigned.ipa
+          mkdir Payload
+          cp -R Runner.app Payload/
+          zip -qry canon_connect-unsigned.ipa Payload
+          ls -la canon_connect-unsigned.ipa
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: canon-connect-unsigned-ipa
+          path: build/ios/iphoneos/canon_connect-unsigned.ipa
